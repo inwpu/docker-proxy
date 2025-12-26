@@ -2,9 +2,6 @@ const REGISTRY = 'https://registry-1.docker.io';
 const AUTH_SERVICE = 'https://auth.docker.io';
 const TIMEOUT_MS = 30000;
 
-const tokenCache = new Map();
-const TOKEN_CACHE_TTL = 180000;
-
 async function fetchWithTimeout(url, options) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -56,14 +53,6 @@ function parseScope(path) {
 }
 
 async function getAuthToken(scope, authorization) {
-  const cacheKey = `${scope || 'default'}:${authorization || 'anonymous'}`;
-
-  const cached = tokenCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < TOKEN_CACHE_TTL) {
-    console.log('Using cached token for scope:', scope);
-    return cached.token;
-  }
-
   try {
     const tokenUrl = new URL(`${AUTH_SERVICE}/token`);
     tokenUrl.searchParams.set('service', 'registry.docker.io');
@@ -76,8 +65,6 @@ async function getAuthToken(scope, authorization) {
       tokenHeaders.set('Authorization', authorization);
     }
 
-    console.log('Fetching new token for scope:', scope);
-
     const tokenResp = await fetchWithTimeout(tokenUrl.toString(), {
       method: 'GET',
       headers: tokenHeaders
@@ -89,17 +76,7 @@ async function getAuthToken(scope, authorization) {
     }
 
     const tokenData = await tokenResp.json();
-    const token = tokenData.token || tokenData.access_token || null;
-
-    if (token) {
-      tokenCache.set(cacheKey, {
-        token: token,
-        timestamp: Date.now()
-      });
-      console.log('Token cached for scope:', scope);
-    }
-
-    return token;
+    return tokenData.token || tokenData.access_token || null;
   } catch (error) {
     console.error('getAuthToken error:', error.message);
     return null;
@@ -257,11 +234,7 @@ export default {
         });
       }
 
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers
-      });
+      return response;
     } catch (error) {
       return new Response(JSON.stringify({
         errors: [{
