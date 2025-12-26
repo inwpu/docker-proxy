@@ -85,6 +85,14 @@ async function handleAuth(request, url) {
   const scope = url.searchParams.get('scope');
   const authorization = request.headers.get('Authorization');
 
+  if (!scope) {
+    const token = await getAuthToken('', authorization);
+    return new Response(JSON.stringify({ token: token || '' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   const token = await getAuthToken(scope, authorization);
 
   if (!token) {
@@ -206,6 +214,23 @@ export default {
 
     try {
       const response = await handleDockerRequest(path, fetchOptions);
+
+      if (response.status === 401) {
+        const responseHeaders = new Headers();
+        responseHeaders.set('Content-Type', 'application/json');
+        responseHeaders.set('Docker-Distribution-Api-Version', 'registry/2.0');
+        responseHeaders.set('WWW-Authenticate', `Bearer realm="https://${url.hostname}/v2/auth",service="registry"`);
+
+        return new Response(JSON.stringify({
+          errors: [{
+            code: 'UNAUTHORIZED',
+            message: 'authentication required'
+          }]
+        }), {
+          status: 401,
+          headers: responseHeaders
+        });
+      }
 
       return new Response(response.body, {
         status: response.status,
