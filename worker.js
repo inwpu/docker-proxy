@@ -111,33 +111,39 @@ async function handleDockerRequest(path, fetchOptions) {
   let response = await fetchWithTimeout(targetUrl, fetchOptions);
 
   if (response.status === 401) {
-    const scope = parseScope(path);
-    const token = await getAuthToken(scope, '');
+    const authHeader = fetchOptions.headers.get('Authorization');
 
-    if (token) {
-      const authHeaders = new Headers(fetchOptions.headers);
-      authHeaders.set('Authorization', `Bearer ${token}`);
+    if (!authHeader) {
+      const scope = parseScope(path);
+      const token = await getAuthToken(scope, '');
 
-      response = await fetchWithTimeout(targetUrl, {
-        ...fetchOptions,
-        headers: authHeaders
-      });
+      if (token) {
+        const authHeaders = new Headers(fetchOptions.headers);
+        authHeaders.set('Authorization', `Bearer ${token}`);
 
-      if (response.status === 301 || response.status === 302 || response.status === 307) {
-        const location = response.headers.get('Location');
-        if (location) {
-          const redirectHeaders = new Headers(authHeaders);
-          redirectHeaders.delete('Authorization');
+        response = await fetchWithTimeout(targetUrl, {
+          ...fetchOptions,
+          headers: authHeaders
+        });
 
-          response = await fetchWithTimeout(location, {
-            method: 'GET',
-            headers: redirectHeaders,
-            redirect: 'follow'
-          });
+        if (response.status === 301 || response.status === 302 || response.status === 307) {
+          const location = response.headers.get('Location');
+          if (location) {
+            const redirectHeaders = new Headers(authHeaders);
+            redirectHeaders.delete('Authorization');
+
+            response = await fetchWithTimeout(location, {
+              method: 'GET',
+              headers: redirectHeaders,
+              redirect: 'follow'
+            });
+          }
         }
       }
     }
-  } else if (response.status === 301 || response.status === 302 || response.status === 307) {
+  }
+
+  if (response.status === 301 || response.status === 302 || response.status === 307) {
     const location = response.headers.get('Location');
     if (location) {
       const redirectHeaders = new Headers(fetchOptions.headers);
