@@ -1,22 +1,32 @@
 const REGISTRY = 'https://registry-1.docker.io';
-const AUTH_SERVICE = 'https://auth.docker.io';
-const TIMEOUT_MS = 30000;
 
-async function fetchWithTimeout(url, options) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+function parseAuthenticate(authenticateStr) {
+  const realmMatch = authenticateStr.match(/realm="([^"]+)"/);
+  const serviceMatch = authenticateStr.match(/service="([^"]+)"/);
 
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
-    clearTimeout(timeout);
-    return response;
-  } catch (error) {
-    clearTimeout(timeout);
-    throw error;
+  if (!realmMatch || !serviceMatch) {
+    throw new Error(`invalid Www-Authenticate Header: ${authenticateStr}`);
   }
+
+  return {
+    realm: realmMatch[1],
+    service: serviceMatch[1]
+  };
+}
+
+async function fetchToken(wwwAuthenticate, scope, authorization) {
+  const url = new URL(wwwAuthenticate.realm);
+  if (wwwAuthenticate.service.length) {
+    url.searchParams.set('service', wwwAuthenticate.service);
+  }
+  if (scope) {
+    url.searchParams.set('scope', scope);
+  }
+  const headers = new Headers();
+  if (authorization) {
+    headers.set('Authorization', authorization);
+  }
+  return await fetch(url, { method: 'GET', headers });
 }
 
 function parseScope(path) {
@@ -52,100 +62,36 @@ function parseScope(path) {
   return `repository:${repoName}:pull`;
 }
 
-async function getAuthToken(scope, authorization) {
-  try {
-    const tokenUrl = new URL(`${AUTH_SERVICE}/token`);
-    tokenUrl.searchParams.set('service', 'registry.docker.io');
-    if (scope) {
-      tokenUrl.searchParams.set('scope', scope);
-    }
-
-    const tokenHeaders = new Headers();
-    if (authorization) {
-      tokenHeaders.set('Authorization', authorization);
-    }
-
-    const tokenResp = await fetchWithTimeout(tokenUrl.toString(), {
-      method: 'GET',
-      headers: tokenHeaders
-    });
-
-    if (!tokenResp.ok) {
-      console.error('Token fetch failed:', tokenResp.status);
-      return null;
-    }
-
-    const tokenData = await tokenResp.json();
-    return tokenData.token || tokenData.access_token || null;
-  } catch (error) {
-    console.error('getAuthToken error:', error.message);
-    return null;
-  }
-}
-
-async function handleAuth(request, url) {
-  const scope = url.searchParams.get('scope');
-  const authorization = request.headers.get('Authorization');
-
-  if (!scope) {
-    const token = await getAuthToken('', authorization);
-    return new Response(JSON.stringify({ token: token || '' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-
-  const token = await getAuthToken(scope, authorization);
-
-  if (!token) {
-    return new Response(JSON.stringify({
-      errors: [{
-        code: 'UNAUTHORIZED',
-        message: 'authentication failed'
-      }]
-    }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' }
-    });
-  }
-
-  return new Response(JSON.stringify({ token }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' }
-  });
-}
-
 async function handleDockerRequest(path, fetchOptions) {
   const targetUrl = `${REGISTRY}${path}`;
 
-  let response = await fetchWithTimeout(targetUrl, fetchOptions);
+  let response = await fetch(targetUrl, {
+    ...fetchOptions,
+    redirect: 'manual'
+  });
 
   if (response.status === 401) {
     const authHeader = fetchOptions.headers.get('Authorization');
 
     if (!authHeader) {
-      const scope = parseScope(path);
-      const token = await getAuthToken(scope, '');
+      const authenticateStr = response.headers.get('WWW-Authenticate');
+      if (authenticateStr) {
+        const wwwAuthenticate = parseAuthenticate(authenticateStr);
+        const scope = parseScope(path);
 
-      if (token) {
-        const authHeaders = new Headers(fetchOptions.headers);
-        authHeaders.set('Authorization', `Bearer ${token}`);
+        const tokenResponse = await fetchToken(wwwAuthenticate, scope, '');
 
-        response = await fetchWithTimeout(targetUrl, {
-          ...fetchOptions,
-          headers: authHeaders
-        });
+        if (tokenResponse.ok) {
+          const tokenData = await tokenResponse.json();
+          if (tokenData.token || tokenData.access_token) {
+            const token = tokenData.token || tokenData.access_token;
+            const authHeaders = new Headers(fetchOptions.headers);
+            authHeaders.set('Authorization', `Bearer ${token}`);
 
-        if (response.status === 301 || response.status === 302 || response.status === 307) {
-          const location = response.headers.get('Location');
-          if (location) {
-            const redirectHeaders = new Headers(authHeaders);
-            redirectHeaders.delete('Authorization');
-
-            response = await fetchWithTimeout(location, {
-              method: 'GET',
-              headers: redirectHeaders,
-              redirect: 'follow'
+            response = await fetch(targetUrl, {
+              ...fetchOptions,
+              headers: authHeaders,
+              redirect: 'manual'
             });
           }
         }
@@ -159,7 +105,7 @@ async function handleDockerRequest(path, fetchOptions) {
       const redirectHeaders = new Headers(fetchOptions.headers);
       redirectHeaders.delete('Authorization');
 
-      response = await fetchWithTimeout(location, {
+      response = await fetch(location, {
         method: 'GET',
         headers: redirectHeaders,
         redirect: 'follow'
@@ -185,10 +131,6 @@ export default {
       });
     }
 
-    if (path === '/v2/auth') {
-      return await handleAuth(request, url);
-    }
-
     if (!path.startsWith('/v2/')) {
       return new Response('Not Found', { status: 404 });
     }
@@ -206,8 +148,7 @@ export default {
 
     const fetchOptions = {
       method: request.method,
-      headers: headers,
-      redirect: 'manual'
+      headers: headers
     };
 
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
