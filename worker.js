@@ -76,24 +76,28 @@ async function handleDockerRequest(path, fetchOptions) {
     if (!authHeader) {
       const authenticateStr = response.headers.get('WWW-Authenticate');
       if (authenticateStr) {
-        const wwwAuthenticate = parseAuthenticate(authenticateStr);
-        const scope = parseScope(path);
+        try {
+          const wwwAuthenticate = parseAuthenticate(authenticateStr);
+          const scope = parseScope(path);
 
-        const tokenResponse = await fetchToken(wwwAuthenticate, scope, '');
+          const tokenResponse = await fetchToken(wwwAuthenticate, scope, '');
 
-        if (tokenResponse.ok) {
-          const tokenData = await tokenResponse.json();
-          if (tokenData.token || tokenData.access_token) {
-            const token = tokenData.token || tokenData.access_token;
-            const authHeaders = new Headers(fetchOptions.headers);
-            authHeaders.set('Authorization', `Bearer ${token}`);
+          if (tokenResponse.ok) {
+            const tokenData = await tokenResponse.json();
+            if (tokenData.token || tokenData.access_token) {
+              const token = tokenData.token || tokenData.access_token;
+              const authHeaders = new Headers(fetchOptions.headers);
+              authHeaders.set('Authorization', `Bearer ${token}`);
 
-            response = await fetch(targetUrl, {
-              ...fetchOptions,
-              headers: authHeaders,
-              redirect: 'manual'
-            });
+              response = await fetch(targetUrl, {
+                ...fetchOptions,
+                headers: authHeaders,
+                redirect: 'manual'
+              });
+            }
           }
+        } catch (err) {
+          console.error('Token fetch error:', err);
         }
       }
     }
@@ -157,24 +161,6 @@ export default {
 
     try {
       const response = await handleDockerRequest(path, fetchOptions);
-
-      if (response.status === 401) {
-        const responseHeaders = new Headers();
-        responseHeaders.set('Content-Type', 'application/json');
-        responseHeaders.set('Docker-Distribution-Api-Version', 'registry/2.0');
-        responseHeaders.set('WWW-Authenticate', `Bearer realm="https://${url.hostname}/v2/auth",service="registry"`);
-
-        return new Response(JSON.stringify({
-          errors: [{
-            code: 'UNAUTHORIZED',
-            message: 'authentication required'
-          }]
-        }), {
-          status: 401,
-          headers: responseHeaders
-        });
-      }
-
       return response;
     } catch (error) {
       return new Response(JSON.stringify({
