@@ -65,25 +65,18 @@ async function getAuthToken(scope, authorization) {
       tokenHeaders.set('Authorization', authorization);
     }
 
-    console.log('Fetching token for scope:', scope);
-
     const tokenResp = await fetchWithTimeout(tokenUrl.toString(), {
       method: 'GET',
       headers: tokenHeaders
     });
 
-    console.log('Token response status:', tokenResp.status);
-
     if (!tokenResp.ok) {
-      const errorText = await tokenResp.text();
-      console.log('Token fetch failed:', errorText);
       return null;
     }
 
     const tokenData = await tokenResp.json();
     return tokenData.token || tokenData.access_token || null;
   } catch (error) {
-    console.log('Token fetch error:', error.message);
     return null;
   }
 }
@@ -125,39 +118,38 @@ async function handleDockerRequest(path, fetchOptions) {
 
   let response = await fetchWithTimeout(targetUrl, fetchOptions);
 
+  // 如果收到 401，尝试获取新 token（无论是否已有 Authorization 头）
   if (response.status === 401) {
-    const authHeader = fetchOptions.headers.get('Authorization');
+    const scope = parseScope(path);
+    const token = await getAuthToken(scope, '');
 
-    if (!authHeader) {
-      const scope = parseScope(path);
-      const token = await getAuthToken(scope, '');
+    if (token) {
+      const authHeaders = new Headers(fetchOptions.headers);
+      authHeaders.set('Authorization', `Bearer ${token}`);
 
-      if (token) {
-        const authHeaders = new Headers(fetchOptions.headers);
-        authHeaders.set('Authorization', `Bearer ${token}`);
+      response = await fetchWithTimeout(targetUrl, {
+        ...fetchOptions,
+        headers: authHeaders
+      });
 
-        response = await fetchWithTimeout(targetUrl, {
-          ...fetchOptions,
-          headers: authHeaders
-        });
+      // 处理重定向到 CDN
+      if (response.status === 301 || response.status === 302 || response.status === 307) {
+        const location = response.headers.get('Location');
+        if (location) {
+          const redirectHeaders = new Headers(authHeaders);
+          redirectHeaders.delete('Authorization');
 
-        if (response.status === 301 || response.status === 302 || response.status === 307) {
-          const location = response.headers.get('Location');
-          if (location) {
-            const redirectHeaders = new Headers(authHeaders);
-            redirectHeaders.delete('Authorization');
-
-            response = await fetchWithTimeout(location, {
-              method: 'GET',
-              headers: redirectHeaders,
-              redirect: 'follow'
-            });
-          }
+          response = await fetchWithTimeout(location, {
+            method: 'GET',
+            headers: redirectHeaders,
+            redirect: 'follow'
+          });
         }
       }
     }
   }
 
+  // 处理已认证请求的重定向
   if (response.status === 301 || response.status === 302 || response.status === 307) {
     const location = response.headers.get('Location');
     if (location) {
