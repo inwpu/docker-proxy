@@ -2,6 +2,10 @@ const REGISTRY = 'https://registry-1.docker.io';
 const AUTH_SERVICE = 'https://auth.docker.io';
 const TIMEOUT_MS = 120000; // 增加到 120 秒以支持大文件下载
 
+// Token 缓存（内存）
+const tokenCache = new Map();
+const TOKEN_CACHE_TTL = 240000; // 4 分钟（token 有效期 5 分钟）
+
 async function fetchWithTimeout(url, options) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -53,6 +57,15 @@ function parseScope(path) {
 }
 
 async function getAuthToken(scope, authorization) {
+  const cacheKey = `${scope}:${authorization || 'anonymous'}`;
+
+  // 检查缓存
+  const cached = tokenCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    console.log('Using cached token for:', scope);
+    return cached.token;
+  }
+
   try {
     const tokenUrl = new URL(`${AUTH_SERVICE}/token`);
     tokenUrl.searchParams.set('service', 'registry.docker.io');
@@ -65,18 +78,49 @@ async function getAuthToken(scope, authorization) {
       tokenHeaders.set('Authorization', authorization);
     }
 
-    const tokenResp = await fetchWithTimeout(tokenUrl.toString(), {
+    console.log('Fetching token:', tokenUrl.toString());
+
+    let tokenResp = await fetchWithTimeout(tokenUrl.toString(), {
       method: 'GET',
       headers: tokenHeaders
     });
 
+    console.log('Token response status:', tokenResp.status);
+
+    // 处理 429 - 等待并重试
+    if (tokenResp.status === 429) {
+      console.log('Rate limited, waiting 10s...');
+      await new Promise(resolve => setTimeout(resolve, 10000));
+
+      tokenResp = await fetchWithTimeout(tokenUrl.toString(), {
+        method: 'GET',
+        headers: tokenHeaders
+      });
+
+      console.log('Retry token response status:', tokenResp.status);
+    }
+
     if (!tokenResp.ok) {
+      const errorText = await tokenResp.text();
+      console.log('Token error:', errorText);
       return null;
     }
 
     const tokenData = await tokenResp.json();
-    return tokenData.token || tokenData.access_token || null;
+    const token = tokenData.token || tokenData.access_token || null;
+
+    // 缓存 token
+    if (token) {
+      tokenCache.set(cacheKey, {
+        token,
+        expiresAt: Date.now() + TOKEN_CACHE_TTL
+      });
+      console.log('Cached token for:', scope);
+    }
+
+    return token;
   } catch (error) {
+    console.log('Token exception:', error.message);
     return null;
   }
 }
