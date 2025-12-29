@@ -240,9 +240,14 @@ export default {
         const wwwAuth = response.headers.get('WWW-Authenticate');
         const responseHeaders = new Headers(response.headers);
 
-        // 如果上游有 WWW-Authenticate，修改指向我们的 auth 端点
+        // 如果上游有 WWW-Authenticate，解析并修改指向我们的 auth 端点
         if (wwwAuth) {
-          responseHeaders.set('WWW-Authenticate', `Bearer realm="https://${url.hostname}/v2/auth",service="registry.docker.io"`);
+          // 提取原始的 scope
+          const scopeMatch = wwwAuth.match(/scope="([^"]+)"/);
+          const scope = scopeMatch ? scopeMatch[1] : parseScope(path);
+
+          responseHeaders.set('WWW-Authenticate',
+            `Bearer realm="https://${url.hostname}/v2/auth",service="registry.docker.io",scope="${scope}"`);
         }
 
         return new Response(response.body, {
