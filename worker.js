@@ -170,6 +170,22 @@ async function handleDockerRequest(path, fetchOptions) {
 
   let response = await fetchWithTimeout(targetUrl, fetchOptions);
 
+  // 如果收到 401 且没有 Authorization，自动获取 token 并重试
+  if (response.status === 401 && !fetchOptions.headers.get('Authorization')) {
+    const scope = parseScope(path);
+    const token = await getAuthToken(scope, '');
+
+    if (token) {
+      const authHeaders = new Headers(fetchOptions.headers);
+      authHeaders.set('Authorization', `Bearer ${token}`);
+
+      response = await fetchWithTimeout(targetUrl, {
+        ...fetchOptions,
+        headers: authHeaders
+      });
+    }
+  }
+
   // 处理重定向
   if (response.status === 301 || response.status === 302 || response.status === 307) {
     const location = response.headers.get('Location');
@@ -235,28 +251,7 @@ export default {
     try {
       const response = await handleDockerRequest(path, fetchOptions);
 
-      // 如果是 401，返回带 WWW-Authenticate 的响应，让客户端去获取 token
-      if (response.status === 401) {
-        const wwwAuth = response.headers.get('WWW-Authenticate');
-        const responseHeaders = new Headers(response.headers);
-
-        // 如果上游有 WWW-Authenticate，解析并修改指向我们的 auth 端点
-        if (wwwAuth) {
-          // 提取原始的 scope
-          const scopeMatch = wwwAuth.match(/scope="([^"]+)"/);
-          const scope = scopeMatch ? scopeMatch[1] : parseScope(path);
-
-          responseHeaders.set('WWW-Authenticate',
-            `Bearer realm="https://${url.hostname}/v2/auth",service="registry.docker.io",scope="${scope}"`);
-        }
-
-        return new Response(response.body, {
-          status: 401,
-          headers: responseHeaders
-        });
-      }
-
-      // 直接返回其他响应
+      // 直接返回响应（认证已在 handleDockerRequest 中处理）
       return response;
     } catch (error) {
       return new Response(JSON.stringify({
