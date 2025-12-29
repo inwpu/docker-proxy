@@ -107,9 +107,17 @@ async function handleAuth(request, url) {
     });
   }
 
-  return new Response(JSON.stringify({ token }), {
+  return new Response(JSON.stringify({
+    token,
+    access_token: token,
+    expires_in: 300,
+    issued_at: new Date().toISOString()
+  }), {
     status: 200,
-    headers: { 'Content-Type': 'application/json' }
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache'
+    }
   });
 }
 
@@ -118,38 +126,7 @@ async function handleDockerRequest(path, fetchOptions) {
 
   let response = await fetchWithTimeout(targetUrl, fetchOptions);
 
-  // 如果收到 401，尝试获取新 token（无论是否已有 Authorization 头）
-  if (response.status === 401) {
-    const scope = parseScope(path);
-    const token = await getAuthToken(scope, '');
-
-    if (token) {
-      const authHeaders = new Headers(fetchOptions.headers);
-      authHeaders.set('Authorization', `Bearer ${token}`);
-
-      response = await fetchWithTimeout(targetUrl, {
-        ...fetchOptions,
-        headers: authHeaders
-      });
-
-      // 处理重定向到 CDN
-      if (response.status === 301 || response.status === 302 || response.status === 307) {
-        const location = response.headers.get('Location');
-        if (location) {
-          const redirectHeaders = new Headers(authHeaders);
-          redirectHeaders.delete('Authorization');
-
-          response = await fetchWithTimeout(location, {
-            method: 'GET',
-            headers: redirectHeaders,
-            redirect: 'follow'
-          });
-        }
-      }
-    }
-  }
-
-  // 处理已认证请求的重定向
+  // 处理重定向
   if (response.status === 301 || response.status === 302 || response.status === 307) {
     const location = response.headers.get('Location');
     if (location) {
@@ -214,24 +191,23 @@ export default {
     try {
       const response = await handleDockerRequest(path, fetchOptions);
 
+      // 如果是 401，返回带 WWW-Authenticate 的响应，让客户端去获取 token
       if (response.status === 401) {
-        const responseHeaders = new Headers();
-        responseHeaders.set('Content-Type', 'application/json');
-        responseHeaders.set('Docker-Distribution-Api-Version', 'registry/2.0');
-        responseHeaders.set('WWW-Authenticate', `Bearer realm="https://${url.hostname}/v2/auth",service="registry"`);
+        const wwwAuth = response.headers.get('WWW-Authenticate');
+        const responseHeaders = new Headers(response.headers);
 
-        return new Response(JSON.stringify({
-          errors: [{
-            code: 'UNAUTHORIZED',
-            message: 'authentication required'
-          }]
-        }), {
+        // 如果上游有 WWW-Authenticate，修改指向我们的 auth 端点
+        if (wwwAuth) {
+          responseHeaders.set('WWW-Authenticate', `Bearer realm="https://${url.hostname}/v2/auth",service="registry.docker.io"`);
+        }
+
+        return new Response(response.body, {
           status: 401,
           headers: responseHeaders
         });
       }
 
-      // 直接返回响应，避免重新包装导致的流式传输问题
+      // 直接返回其他响应
       return response;
     } catch (error) {
       return new Response(JSON.stringify({
