@@ -65,18 +65,25 @@ async function getAuthToken(scope, authorization) {
       tokenHeaders.set('Authorization', authorization);
     }
 
+    console.log('Fetching token for scope:', scope);
+
     const tokenResp = await fetchWithTimeout(tokenUrl.toString(), {
       method: 'GET',
       headers: tokenHeaders
     });
 
+    console.log('Token response status:', tokenResp.status);
+
     if (!tokenResp.ok) {
+      const errorText = await tokenResp.text();
+      console.log('Token fetch failed:', errorText);
       return null;
     }
 
     const tokenData = await tokenResp.json();
     return tokenData.token || tokenData.access_token || null;
-  } catch {
+  } catch (error) {
+    console.log('Token fetch error:', error.message);
     return null;
   }
 }
