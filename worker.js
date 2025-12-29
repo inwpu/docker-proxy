@@ -1,6 +1,6 @@
 const REGISTRY = 'https://registry-1.docker.io';
 const AUTH_SERVICE = 'https://auth.docker.io';
-const TIMEOUT_MS = 30000;
+const TIMEOUT_MS = 120000; // 增加到 120 秒以支持大文件下载
 
 async function fetchWithTimeout(url, options) {
   const controller = new AbortController();
@@ -232,11 +232,8 @@ export default {
         });
       }
 
-      return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers
-      });
+      // 直接返回响应，避免重新包装导致的流式传输问题
+      return response;
     } catch (error) {
       return new Response(JSON.stringify({
         errors: [{
